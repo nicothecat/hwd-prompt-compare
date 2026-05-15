@@ -77,6 +77,8 @@ export const responses = s.responses as unknown as typeof pgSchema.responses;
 export const parsedComparisons = s.parsedComparisons as unknown as typeof pgSchema.parsedComparisons;
 export const sources = s.sources as unknown as typeof pgSchema.sources;
 export const conceptScores = s.conceptScores as unknown as typeof pgSchema.conceptScores;
+export const visibilityRuns = s.visibilityRuns as unknown as typeof pgSchema.visibilityRuns;
+export const visibilityResponses = s.visibilityResponses as unknown as typeof pgSchema.visibilityResponses;
 
 export const isPostgres = usePostgres;
 

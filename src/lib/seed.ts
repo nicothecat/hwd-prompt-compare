@@ -8,10 +8,24 @@ function launchDate(dateStr: string) {
 
 const DEFAULT_MODELS = [
   {
-    openrouterId: "openai/gpt-5.2",
-    displayName: "GPT 5.2",
+    openrouterId: "openai/gpt-5",
+    displayName: "GPT 5 (Fast)",
     provider: "openai",
     launchDate: launchDate("2026-01-15"),
+    isActive: true,
+  },
+  {
+    openrouterId: "openai/o3",
+    displayName: "GPT 5 (Thinking)",
+    provider: "openai",
+    launchDate: launchDate("2026-01-15"),
+    isActive: true,
+  },
+  {
+    openrouterId: "anthropic/claude-opus-4-7",
+    displayName: "Claude Opus 4.7",
+    provider: "anthropic",
+    launchDate: launchDate("2026-04-01"),
     isActive: true,
   },
   {
@@ -22,22 +36,15 @@ const DEFAULT_MODELS = [
     isActive: true,
   },
   {
-    openrouterId: "anthropic/claude-opus-4.6",
-    displayName: "Claude Opus 4.6",
-    provider: "anthropic",
-    launchDate: launchDate("2026-02-01"),
-    isActive: true,
-  },
-  {
-    openrouterId: "google/gemini-3-flash-preview",
-    displayName: "Gemini 3 Flash",
+    openrouterId: "google/gemini-3.1-flash-preview",
+    displayName: "Gemini 3.1 (Fast)",
     provider: "google",
-    launchDate: launchDate("2026-02-15"),
+    launchDate: launchDate("2026-03-01"),
     isActive: true,
   },
   {
     openrouterId: "google/gemini-3.1-pro-preview",
-    displayName: "Gemini 3.1 Pro",
+    displayName: "Gemini 3.1 (Thinking)",
     provider: "google",
     launchDate: launchDate("2026-03-01"),
     isActive: true,
@@ -46,32 +53,39 @@ const DEFAULT_MODELS = [
 
 const STARTER_PROMPTS = [
   {
-    name: "Agency Comparison (Detailed)",
-    templateText: `I'm a marketing manager evaluating agencies. Compare {brand1}, {brand2}, and {brand3} — give me the pros and cons of each, what it's likely to be like working with them, where they are strong and weak. Include a table at the end with all your sources and links.`,
+    name: "Best SEO Agencies",
+    templateText: `I'm a marketing manager looking for an SEO agency. What are the best SEO agencies right now? Give me a ranked list with pros and cons for each, what it's like to work with them, and include sources and links.`,
     isTemplate: true,
   },
   {
-    name: "Head-to-Head (2 Brands)",
-    templateText: `I'm choosing between {brand1} and {brand2}. What are the strengths and weaknesses of each? Compare their reputation, expertise, pricing, and customer experience. Cite your sources with links.`,
+    name: "Top AI Tools for Marketing",
+    templateText: `What are the best AI tools for marketing teams in 2025? Include a comparison of features, pricing, and use cases. Cite your sources with links.`,
     isTemplate: true,
   },
   {
-    name: "Recommendation Request",
-    templateText: `Tell me everything you know about {brand1} vs {brand2} vs {brand3}. Who would you recommend for a mid-market B2B company and why? Back up your answer with sources and links.`,
+    name: "B2B SaaS CRM Recommendations",
+    templateText: `I'm choosing a CRM for a mid-market B2B SaaS company with a 20-person sales team. What are the top options, what are the tradeoffs, and which would you recommend? Back up your answer with sources and links.`,
     isTemplate: true,
   },
   {
-    name: "Visibility & Reputation Audit",
-    templateText: `I work at {brand1} and I'm worried about our visibility in AI search compared to {brand2} and {brand3}. How do we stack up? Where are we strong, where are we weak, and what would you recommend? Include sources with links.`,
+    name: "Brand Visibility Audit",
+    templateText: `Tell me everything you know about [your brand name]. How visible are they in AI-generated recommendations? Where do they show up strong and where are they missing? Include sources with links.`,
     isTemplate: true,
   },
 ];
 
 export async function seedDatabase() {
-  // Deactivate old models that are no longer in the default list
-  const oldSlugs = ["openai/gpt-4o", "anthropic/claude-sonnet-4", "google/gemini-2.5-pro-preview-03-25", "perplexity/sonar-pro"];
-  for (const slug of oldSlugs) {
-    await db.update(models).set({ isActive: false }).where(eq(models.openrouterId, slug));
+  // Deactivate all models not in the current default list
+  const activeIds = DEFAULT_MODELS.map((m) => m.openrouterId);
+  const allModels = await db.query.models.findMany();
+  for (const m of allModels) {
+    if (!activeIds.includes(m.openrouterId)) {
+      await db.update(models).set({ isActive: false }).where(eq(models.openrouterId, m.openrouterId));
+    }
+  }
+  // Ensure active models in list are marked active
+  for (const m of DEFAULT_MODELS) {
+    await db.update(models).set({ isActive: true }).where(eq(models.openrouterId, m.openrouterId));
   }
 
   // Seed models (skip existing)

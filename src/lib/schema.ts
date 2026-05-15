@@ -211,6 +211,47 @@ export const conceptScoresRelations = relations(conceptScores, ({ one }) => ({
   }),
 }));
 
+// -- Visibility Runs --
+export const visibilityRuns = pgTable("visibility_run", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  brandId: uuid("brand_id").references(() => brands.id).notNull(),
+  promptCount: integer("prompt_count").notNull(),
+  modelIds: jsonb("model_ids").$type<string[]>().notNull(),
+  status: text("status", { enum: ["pending", "running", "completed", "failed"] })
+    .notNull()
+    .default("pending"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+
+export const visibilityRunsRelations = relations(visibilityRuns, ({ one, many }) => ({
+  brand: one(brands, { fields: [visibilityRuns.brandId], references: [brands.id] }),
+  visibilityResponses: many(visibilityResponses),
+}));
+
+// -- Visibility Responses --
+export const visibilityResponses = pgTable("visibility_response", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  runId: uuid("run_id").references(() => visibilityRuns.id).notNull(),
+  promptText: text("prompt_text").notNull(),
+  promptIndex: integer("prompt_index").notNull(),
+  modelId: uuid("model_id").references(() => models.id).notNull(),
+  rawResponse: text("raw_response"),
+  visible: boolean("visible"),
+  evidenceSentence: text("evidence_sentence"),
+  sourceUrls: jsonb("source_urls").$type<Array<{ url: string; isVerified: boolean }>>(),
+  classifierModelId: uuid("classifier_model_id").references(() => models.id),
+  error: text("error"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+
+export const visibilityResponsesRelations = relations(visibilityResponses, ({ one }) => ({
+  run: one(visibilityRuns, { fields: [visibilityResponses.runId], references: [visibilityRuns.id] }),
+  model: one(models, { fields: [visibilityResponses.modelId], references: [models.id] }),
+  classifierModel: one(models, { fields: [visibilityResponses.classifierModelId], references: [models.id] }),
+}));
+
 // -- Type exports --
 export type Brand = typeof brands.$inferSelect;
 export type Model = typeof models.$inferSelect;
@@ -221,3 +262,5 @@ export type Response = typeof responses.$inferSelect;
 export type ParsedComparison = typeof parsedComparisons.$inferSelect;
 export type Source = typeof sources.$inferSelect;
 export type ConceptScore = typeof conceptScores.$inferSelect;
+export type VisibilityRun = typeof visibilityRuns.$inferSelect;
+export type VisibilityResponse = typeof visibilityResponses.$inferSelect;

@@ -12,16 +12,6 @@ interface Prompt {
   templateText: string;
 }
 
-interface DetectedBrand {
-  name: string;
-  confidence: string;
-}
-
-interface DetectedConcept {
-  name: string;
-  description: string;
-}
-
 interface ModelOption {
   id: string;
   displayName: string;
@@ -29,27 +19,20 @@ interface ModelOption {
   isActive: boolean;
 }
 
-type WizardStep = "prompt" | "brands" | "concepts" | "models";
+type WizardStep = "prompt" | "brand" | "models";
 
 export default function HomePage() {
   const router = useRouter();
   const [templates, setTemplates] = useState<Prompt[]>([]);
   const [promptText, setPromptText] = useState("");
 
-  // Wizard state
   const [wizardStep, setWizardStep] = useState<WizardStep>("prompt");
 
   // Brand step
-  const [detectedBrands, setDetectedBrands] = useState<DetectedBrand[]>([]);
-  const [editableBrands, setEditableBrands] = useState<string[]>([]);
-  const [brandDomains, setBrandDomains] = useState<Record<string, string>>({});
-  const [newBrand, setNewBrand] = useState("");
+  const [brandName, setBrandName] = useState("");
+  const [brandDomain, setBrandDomain] = useState("");
 
-  // Concept step
-  const [detectedConcepts, setDetectedConcepts] = useState<DetectedConcept[]>([]);
-  const [selectedConcepts, setSelectedConcepts] = useState<Set<string>>(new Set());
-
-  // Model step — track which modes are selected per model
+  // Model step
   const [availableModels, setAvailableModels] = useState<ModelOption[]>([]);
   const [modelModes, setModelModes] = useState<Record<string, { training: boolean; web: boolean }>>({});
 
@@ -60,7 +43,7 @@ export default function HomePage() {
   const [runTotal, setRunTotal] = useState(0);
   const [runPhase, setRunPhase] = useState<string | null>(null);
   const [pipelineError, setPipelineError] = useState("");
-  const [detecting, setDetecting] = useState(false);
+  const [loading, setLoading] = useState(false);
 
   const fetchTemplates = useCallback(async () => {
     try {
@@ -77,75 +60,32 @@ export default function HomePage() {
     fetchTemplates();
   }, [fetchTemplates]);
 
-  // Step 1: Detect brands
-  const handleDetectBrands = async () => {
+  const handleNextToBrand = () => {
     if (!promptText.trim()) return;
-    setDetecting(true);
+    setWizardStep("brand");
     setPipelineError("");
-
-    try {
-      const res = await apiFetch("/api/brands/detect", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ promptText }),
-      });
-      const data = await res.json();
-      setDetectedBrands(data.brands || []);
-      setEditableBrands((data.brands || []).map((b: DetectedBrand) => b.name));
-      setWizardStep("brands");
-    } catch {
-      setPipelineError("Failed to detect brands. Check your API keys.");
-    } finally {
-      setDetecting(false);
-    }
   };
 
-  // Step 2: Detect concepts
-  const handleDetectConcepts = async () => {
-    if (editableBrands.length < 2) return;
-    setDetecting(true);
-    setPipelineError("");
-
-    try {
-      const res = await apiFetch("/api/concepts/detect", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ promptText, brandNames: editableBrands }),
-      });
-      const data = await res.json();
-      const concepts = data.concepts || [];
-      setDetectedConcepts(concepts);
-      setSelectedConcepts(new Set(concepts.map((c: DetectedConcept) => c.name)));
-      setWizardStep("concepts");
-    } catch {
-      setPipelineError("Failed to detect concepts.");
-    } finally {
-      setDetecting(false);
-    }
-  };
-
-  // Step 3: Load models
   const handleLoadModels = async () => {
-    setDetecting(true);
+    if (!brandName.trim()) return;
+    setLoading(true);
     try {
       const res = await apiFetch("/api/models");
-      const models: ModelOption[] = await res.json();
-      setAvailableModels(models);
-      // Default: active models get both modes checked
+      const modelList: ModelOption[] = await res.json();
+      setAvailableModels(modelList);
       const modes: Record<string, { training: boolean; web: boolean }> = {};
-      for (const m of models) {
-        modes[m.id] = { training: m.isActive, web: m.isActive };
+      for (const m of modelList) {
+        modes[m.id] = { training: m.isActive, web: false };
       }
       setModelModes(modes);
       setWizardStep("models");
     } catch {
       setPipelineError("Failed to load models.");
     } finally {
-      setDetecting(false);
+      setLoading(false);
     }
   };
 
-  // Run comparison with streaming progress
   const handleRunComparison = async () => {
     setIsRunning(true);
     setRunEvents([]);
@@ -160,10 +100,9 @@ export default function HomePage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           promptText,
-          brandNames: editableBrands,
-          brandDomains,
+          brandName,
+          brandDomain: brandDomain.trim() || undefined,
           modelModes,
-          selectedConcepts: Array.from(selectedConcepts),
         }),
       });
 
@@ -228,7 +167,7 @@ export default function HomePage() {
         }
       }
     } catch (err) {
-      setPipelineError(err instanceof Error ? err.message : "Comparison failed");
+      setPipelineError(err instanceof Error ? err.message : "Run failed");
     } finally {
       setIsRunning(false);
     }
@@ -240,32 +179,6 @@ export default function HomePage() {
     setIsRunning(false);
   };
 
-  const handleRemoveBrand = (index: number) => {
-    const removed = editableBrands[index];
-    setEditableBrands((prev) => prev.filter((_, i) => i !== index));
-    setBrandDomains((prev) => {
-      const next = { ...prev };
-      delete next[removed];
-      return next;
-    });
-  };
-
-  const handleAddBrand = () => {
-    if (newBrand.trim() && editableBrands.length < 5) {
-      setEditableBrands((prev) => [...prev, newBrand.trim()]);
-      setNewBrand("");
-    }
-  };
-
-  const toggleConcept = (name: string) => {
-    setSelectedConcepts((prev) => {
-      const next = new Set(prev);
-      if (next.has(name)) next.delete(name);
-      else next.add(name);
-      return next;
-    });
-  };
-
   const toggleModelMode = (id: string, mode: "training" | "web") => {
     setModelModes((prev) => ({
       ...prev,
@@ -273,25 +186,19 @@ export default function HomePage() {
     }));
   };
 
-  // Count how many total API calls will be made
   const trainingCount = Object.values(modelModes).filter((m) => m.training).length;
   const webCount = Object.values(modelModes).filter((m) => m.web).length;
   const totalCalls = trainingCount + webCount;
   const hasAnyModel = totalCalls > 0;
 
-  const stepNumber =
-    wizardStep === "prompt" ? 0 :
-    wizardStep === "brands" ? 1 :
-    wizardStep === "concepts" ? 2 : 3;
+  const stepNumber = wizardStep === "prompt" ? 0 : wizardStep === "brand" ? 1 : 2;
 
   return (
     <div className="mx-auto max-w-3xl px-4 py-12">
       <div className="mb-8 text-center">
-        <h1 className="mb-2 text-3xl font-bold text-gray-900">
-          Brand Prompt Compare
-        </h1>
+        <h1 className="mb-2 text-3xl font-bold text-gray-900">AI Prompt Runner</h1>
         <p className="text-lg text-gray-600">
-          Compare how AI describes your brand vs competitors
+          Run any prompt across multiple LLMs and track your brand&apos;s visibility in the responses
         </p>
       </div>
 
@@ -305,22 +212,21 @@ export default function HomePage() {
         />
       ) : (
         <>
-          {/* Step indicator */}
           {wizardStep !== "prompt" && (
             <div className="mb-6 flex items-center justify-center gap-2 text-sm">
-              {["Brands", "Concepts", "Models"].map((label, i) => (
+              {["Brand", "Models"].map((label, i) => (
                 <div key={label} className="flex items-center gap-2">
                   {i > 0 && <div className="h-px w-8 bg-gray-300" />}
                   <div
                     className={`flex h-7 w-7 items-center justify-center rounded-full text-xs font-bold ${
-                      stepNumber > i
+                      stepNumber > i + 1
                         ? "bg-green-500 text-white"
                         : stepNumber === i + 1
                         ? "bg-blue-600 text-white"
                         : "bg-gray-200 text-gray-500"
                     }`}
                   >
-                    {stepNumber > i ? "\u2713" : i + 1}
+                    {stepNumber > i + 1 ? "✓" : i + 1}
                   </div>
                   <span className={stepNumber === i + 1 ? "font-semibold text-gray-900" : "text-gray-500"}>
                     {label}
@@ -330,7 +236,7 @@ export default function HomePage() {
             </div>
           )}
 
-          {/* Step 0: Prompt input */}
+          {/* Step 0: Prompt */}
           {wizardStep === "prompt" && (
             <>
               {templates.length > 0 && (
@@ -349,90 +255,56 @@ export default function HomePage() {
                 <textarea
                   value={promptText}
                   onChange={(e) => setPromptText(e.target.value)}
-                  placeholder="Example: I'm a marketing manager evaluating agencies. Compare Seer Interactive, Wpromote, and Directive..."
+                  placeholder="Ask anything — e.g. What are the best SEO agencies right now? Who would you recommend for a B2B company?"
                   className="w-full rounded-lg border border-gray-300 p-4 text-sm leading-relaxed focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-200"
                   rows={6}
                 />
-                <div className="mt-2 rounded-lg bg-blue-50 px-3 py-2 text-xs text-blue-700">
-                  Tip: For best results, ask for pros/cons, strengths/weaknesses,
-                  and a source table with links.
-                </div>
                 <button
-                  onClick={handleDetectBrands}
-                  disabled={!promptText.trim() || detecting}
+                  onClick={handleNextToBrand}
+                  disabled={!promptText.trim()}
                   className="mt-4 rounded-lg bg-blue-600 px-6 py-2.5 text-sm font-medium text-white transition-colors hover:bg-blue-700 disabled:bg-gray-300"
                 >
-                  {detecting ? "Detecting..." : "Detect Brands"}
+                  Next: Set Brand to Track →
                 </button>
-                {pipelineError && (
-                  <div className="mt-3 rounded-lg bg-red-50 p-3 text-sm text-red-700">
-                    {pipelineError}
-                  </div>
-                )}
               </div>
             </>
           )}
 
-          {/* Step 1: Confirm brands */}
-          {wizardStep === "brands" && (
+          {/* Step 1: Brand */}
+          {wizardStep === "brand" && (
             <div className="mb-6 rounded-lg border border-blue-200 bg-blue-50 p-6">
-              <h2 className="mb-3 text-lg font-semibold text-gray-900">
-                Step 1: Confirm Brands
-              </h2>
-              <div className="mb-4 space-y-3">
-                {editableBrands.map((brand, i) => (
-                  <div
-                    key={i}
-                    className="flex items-center gap-3 rounded-lg bg-white px-4 py-3 shadow-sm"
-                  >
-                    <span className="min-w-[120px] text-sm font-medium text-gray-800">
-                      {brand}
-                    </span>
-                    <input
-                      type="text"
-                      value={brandDomains[brand] || ""}
-                      onChange={(e) =>
-                        setBrandDomains((prev) => ({ ...prev, [brand]: e.target.value }))
-                      }
-                      placeholder="e.g. seerinteractive.com"
-                      className="flex-1 rounded border border-gray-300 px-3 py-1.5 text-sm text-gray-700 placeholder-gray-400 focus:border-blue-500 focus:outline-none"
-                    />
-                    <button
-                      onClick={() => handleRemoveBrand(i)}
-                      className="text-gray-400 hover:text-red-500"
-                    >
-                      x
-                    </button>
-                  </div>
-                ))}
-              </div>
-              <p className="mb-4 text-xs text-gray-500">
-                Add each brand&apos;s website domain so we can verify sources against their real site.
+              <h2 className="mb-1 text-lg font-semibold text-gray-900">Step 1: Brand to Track</h2>
+              <p className="mb-4 text-sm text-gray-600">
+                Which brand do you want to check visibility for? We&apos;ll analyze every model response to see if this brand is mentioned.
               </p>
-              <div className="mb-4 flex gap-2">
+              <div className="mb-3">
+                <label className="mb-1 block text-xs font-medium text-gray-700">Brand name (required)</label>
                 <input
                   type="text"
-                  value={newBrand}
-                  onChange={(e) => setNewBrand(e.target.value)}
-                  onKeyDown={(e) => e.key === "Enter" && handleAddBrand()}
-                  placeholder="Add a brand..."
-                  className="rounded-lg border border-gray-300 px-3 py-1.5 text-sm focus:border-blue-500 focus:outline-none"
+                  value={brandName}
+                  onChange={(e) => setBrandName(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && handleLoadModels()}
+                  placeholder="e.g. Seer Interactive"
+                  className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
                 />
-                <button
-                  onClick={handleAddBrand}
-                  disabled={!newBrand.trim() || editableBrands.length >= 5}
-                  className="rounded-lg bg-gray-100 px-3 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-200 disabled:opacity-50"
-                >
-                  Add
-                </button>
+              </div>
+              <div className="mb-5">
+                <label className="mb-1 block text-xs font-medium text-gray-700">Domain (optional)</label>
+                <input
+                  type="text"
+                  value={brandDomain}
+                  onChange={(e) => setBrandDomain(e.target.value)}
+                  placeholder="e.g. seerinteractive.com"
+                  className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
+                />
               </div>
               <div className="flex gap-3">
                 <button
-                  onClick={handleDetectConcepts}
-                  disabled={editableBrands.length < 2 || detecting}
+                  onClick={handleLoadModels}
+                  disabled={!brandName.trim() || loading}
                   className="rounded-lg bg-blue-600 px-6 py-2.5 text-sm font-medium text-white transition-colors hover:bg-blue-700 disabled:bg-gray-300"
                 >
-                  {detecting ? "Detecting Concepts..." : "Next: Select Concepts"}
+                  {loading ? "Loading Models..." : "Next: Select Models →"}
                 </button>
                 <button
                   onClick={() => setWizardStep("prompt")}
@@ -441,81 +313,20 @@ export default function HomePage() {
                   Back
                 </button>
               </div>
+              {pipelineError && (
+                <div className="mt-3 rounded-lg bg-red-50 p-3 text-sm text-red-700">{pipelineError}</div>
+              )}
             </div>
           )}
 
-          {/* Step 2: Select concepts */}
-          {wizardStep === "concepts" && (
-            <div className="mb-6 rounded-lg border border-purple-200 bg-purple-50 p-6">
-              <h2 className="mb-1 text-lg font-semibold text-gray-900">
-                Step 2: Select Concepts to Evaluate
-              </h2>
-              <p className="mb-4 text-sm text-gray-600">
-                Check the topics that matter most to you. Only selected concepts will be scored.
-              </p>
-              <div className="mb-4 space-y-2">
-                {detectedConcepts.map((concept) => (
-                  <label
-                    key={concept.name}
-                    className="flex cursor-pointer items-start gap-3 rounded-lg bg-white px-4 py-3 shadow-sm hover:bg-gray-50"
-                  >
-                    <input
-                      type="checkbox"
-                      checked={selectedConcepts.has(concept.name)}
-                      onChange={() => toggleConcept(concept.name)}
-                      className="mt-0.5 h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
-                    />
-                    <div>
-                      <span className="font-medium text-gray-900">{concept.name}</span>
-                      <p className="text-xs text-gray-500">{concept.description}</p>
-                    </div>
-                  </label>
-                ))}
-              </div>
-              <div className="mb-3 flex gap-2 text-xs">
-                <button
-                  onClick={() => setSelectedConcepts(new Set(detectedConcepts.map((c) => c.name)))}
-                  className="text-blue-600 hover:underline"
-                >
-                  Select All
-                </button>
-                <span className="text-gray-300">|</span>
-                <button
-                  onClick={() => setSelectedConcepts(new Set())}
-                  className="text-blue-600 hover:underline"
-                >
-                  Clear All
-                </button>
-              </div>
-              <div className="flex gap-3">
-                <button
-                  onClick={handleLoadModels}
-                  disabled={selectedConcepts.size === 0 || detecting}
-                  className="rounded-lg bg-blue-600 px-6 py-2.5 text-sm font-medium text-white transition-colors hover:bg-blue-700 disabled:bg-gray-300"
-                >
-                  {detecting ? "Loading Models..." : `Next: Select Models (${selectedConcepts.size} concepts)`}
-                </button>
-                <button
-                  onClick={() => setWizardStep("brands")}
-                  className="rounded-lg bg-white px-6 py-2.5 text-sm font-medium text-gray-700 hover:bg-gray-100"
-                >
-                  Back
-                </button>
-              </div>
-            </div>
-          )}
-
-          {/* Step 3: Select models & modes */}
+          {/* Step 2: Models */}
           {wizardStep === "models" && (
             <div className="mb-6 rounded-lg border border-green-200 bg-green-50 p-6">
-              <h2 className="mb-1 text-lg font-semibold text-gray-900">
-                Step 3: Select Models &amp; Modes
-              </h2>
+              <h2 className="mb-1 text-lg font-semibold text-gray-900">Step 2: Select Models &amp; Modes</h2>
               <p className="mb-4 text-sm text-gray-600">
-                For each model, choose whether to run Training Data, Web Search, or both.
+                Choose which models to run your prompt against, and whether to use training data, web search, or both.
               </p>
 
-              {/* Header row */}
               <div className="mb-2 flex items-center gap-3 px-4 text-xs font-semibold text-gray-500">
                 <span className="flex-1">Model</span>
                 <span className="w-20 text-center">Training</span>
@@ -524,10 +335,7 @@ export default function HomePage() {
 
               <div className="mb-4 space-y-2">
                 {availableModels.map((model) => (
-                  <div
-                    key={model.id}
-                    className="flex items-center gap-3 rounded-lg bg-white px-4 py-3 shadow-sm"
-                  >
+                  <div key={model.id} className="flex items-center gap-3 rounded-lg bg-white px-4 py-3 shadow-sm">
                     <div className="flex-1">
                       <span className="font-medium text-gray-900">{model.displayName}</span>
                       <span className="ml-2 rounded bg-gray-100 px-2 py-0.5 text-xs text-gray-500">
@@ -558,17 +366,6 @@ export default function HomePage() {
                 <button
                   onClick={() => {
                     const modes: Record<string, { training: boolean; web: boolean }> = {};
-                    for (const m of availableModels) modes[m.id] = { training: true, web: true };
-                    setModelModes(modes);
-                  }}
-                  className="text-blue-600 hover:underline"
-                >
-                  All Both
-                </button>
-                <span className="text-gray-300">|</span>
-                <button
-                  onClick={() => {
-                    const modes: Record<string, { training: boolean; web: boolean }> = {};
                     for (const m of availableModels) modes[m.id] = { training: true, web: false };
                     setModelModes(modes);
                   }}
@@ -580,12 +377,12 @@ export default function HomePage() {
                 <button
                   onClick={() => {
                     const modes: Record<string, { training: boolean; web: boolean }> = {};
-                    for (const m of availableModels) modes[m.id] = { training: false, web: true };
+                    for (const m of availableModels) modes[m.id] = { training: true, web: true };
                     setModelModes(modes);
                   }}
                   className="text-blue-600 hover:underline"
                 >
-                  All Web
+                  All Both
                 </button>
                 <span className="text-gray-300">|</span>
                 <button
@@ -600,10 +397,11 @@ export default function HomePage() {
                 </button>
               </div>
 
-              {/* Summary */}
               <div className="mb-4 rounded-lg bg-white p-3 text-sm text-gray-700">
-                <strong>Summary:</strong> {editableBrands.join(" vs ")} &mdash;{" "}
-                {selectedConcepts.size} concepts, {trainingCount} training + {webCount} web = {totalCalls} API calls
+                <strong>Tracking:</strong> {brandName}
+                {brandDomain && <span className="ml-1 text-gray-400">({brandDomain})</span>}
+                {" — "}
+                {trainingCount} training + {webCount} web = {totalCalls} API calls
               </div>
 
               <div className="flex gap-3">
@@ -612,21 +410,19 @@ export default function HomePage() {
                   disabled={!hasAnyModel}
                   className="rounded-lg bg-blue-600 px-6 py-2.5 text-sm font-medium text-white transition-colors hover:bg-blue-700 disabled:bg-gray-300"
                 >
-                  Run Comparison
+                  Run Prompt
                 </button>
                 <button
-                  onClick={() => setWizardStep("concepts")}
+                  onClick={() => setWizardStep("brand")}
                   className="rounded-lg bg-white px-6 py-2.5 text-sm font-medium text-gray-700 hover:bg-gray-100"
                 >
                   Back
                 </button>
               </div>
-            </div>
-          )}
 
-          {pipelineError && wizardStep !== "prompt" && (
-            <div className="mt-3 rounded-lg bg-red-50 p-3 text-sm text-red-700">
-              {pipelineError}
+              {pipelineError && (
+                <div className="mt-3 rounded-lg bg-red-50 p-3 text-sm text-red-700">{pipelineError}</div>
+              )}
             </div>
           )}
         </>

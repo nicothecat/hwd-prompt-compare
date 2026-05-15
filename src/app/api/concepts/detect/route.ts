@@ -25,7 +25,7 @@ export async function POST(request: NextRequest) {
 
     const response = await client.messages.create({
       model: "claude-haiku-4-5-20251001",
-      max_tokens: 500,
+      max_tokens: 2000,
       messages: [
         {
           role: "user",
@@ -52,16 +52,32 @@ Respond with ONLY valid JSON array.`,
     const content =
       response.content[0].type === "text" ? response.content[0].text : "";
 
+    const cleaned = content
+      .replace(/```json\n?/g, "")
+      .replace(/```\n?/g, "")
+      .trim();
+
+    let concepts: unknown = null;
     try {
-      const cleaned = content
-        .replace(/```json\n?/g, "")
-        .replace(/```\n?/g, "")
-        .trim();
-      const concepts = JSON.parse(cleaned);
-      return NextResponse.json({ concepts });
+      concepts = JSON.parse(cleaned);
     } catch {
-      return NextResponse.json({ concepts: [] });
+      const start = cleaned.indexOf("[");
+      const end = cleaned.lastIndexOf("]");
+      if (start !== -1 && end > start) {
+        try {
+          concepts = JSON.parse(cleaned.slice(start, end + 1));
+        } catch (err) {
+          console.error("concepts/detect: fallback JSON parse failed", err, "raw:", content);
+        }
+      } else {
+        console.error("concepts/detect: no JSON array found in response. raw:", content);
+      }
     }
+
+    if (Array.isArray(concepts)) {
+      return NextResponse.json({ concepts });
+    }
+    return NextResponse.json({ concepts: [] });
   } catch (error) {
     console.error("Error detecting concepts:", error);
     return NextResponse.json(

@@ -7,15 +7,14 @@ import {
   responses,
   parsedComparisons,
   sources,
-  conceptScores,
   models,
   now,
 } from "@/lib/db";
 import { eq, inArray } from "drizzle-orm";
 import { queryModel, type QueryMode } from "@/lib/openrouter";
+import { buildClassifierPrompt, parseClassifierResponse } from "@/lib/visibility-classifier";
 import { extractComparison } from "@/lib/extraction";
 import { verifyUrls } from "@/lib/source-verification";
-import { aggregateScores } from "@/lib/scoring";
 
 // POST /api/runs/stream - Trigger a run with SSE progress updates
 export async function POST(request: NextRequest) {
@@ -23,17 +22,15 @@ export async function POST(request: NextRequest) {
   const {
     promptText,
     promptId,
-    brandNames,
-    brandDomains,
+    brandName,
+    brandDomain,
     modelModes,
-    selectedConcepts,
   }: {
     promptText: string;
     promptId?: string;
-    brandNames: string[];
-    brandDomains?: Record<string, string>;
+    brandName: string;
+    brandDomain?: string;
     modelModes?: Record<string, { training: boolean; web: boolean }>;
-    selectedConcepts?: string[];
   } = body;
 
   const encoder = new TextEncoder();
@@ -47,6 +44,12 @@ export async function POST(request: NextRequest) {
       }
 
       try {
+        if (!promptText || !brandName) {
+          send("error", { message: "promptText and brandName are required" });
+          controller.close();
+          return;
+        }
+
         // 1. Get models
         let activeModels: (typeof models.$inferSelect)[];
         if (modelModes && Object.keys(modelModes).length > 0) {
@@ -66,7 +69,7 @@ export async function POST(request: NextRequest) {
           return;
         }
 
-        // Build job list: each model + mode combo
+        // Build job list
         const runTraining = modelModes
           ? activeModels.filter((m) => modelModes[m.id]?.training)
           : activeModels;
@@ -82,23 +85,21 @@ export async function POST(request: NextRequest) {
 
         send("init", { totalJobs: jobs.length });
 
-        // 2. Create brands (with domain if provided)
-        const brandRecords = await Promise.all(
-          brandNames.map(async (name) => {
-            const domain = brandDomains?.[name] || null;
-            const existing = await db.query.brands.findFirst({ where: eq(brands.name, name) });
-            if (existing) {
-              // Update domain if one was provided and it changed
-              if (domain && existing.domain !== domain) {
-                await db.update(brands).set({ domain }).where(eq(brands.id, existing.id));
-                return { ...existing, domain };
-              }
-              return existing;
-            }
-            const [created] = await db.insert(brands).values({ name, domain }).returning();
-            return created;
-          })
-        );
+        // 2. Create/find brand
+        const domain = brandDomain || null;
+        const existingBrand = await db.query.brands.findFirst({ where: eq(brands.name, brandName) });
+        let brandRecord: typeof brands.$inferSelect;
+        if (existingBrand) {
+          if (domain && existingBrand.domain !== domain) {
+            await db.update(brands).set({ domain }).where(eq(brands.id, existingBrand.id));
+            brandRecord = { ...existingBrand, domain };
+          } else {
+            brandRecord = existingBrand;
+          }
+        } else {
+          const [created] = await db.insert(brands).values({ name: brandName, domain }).returning();
+          brandRecord = created;
+        }
 
         // 3. Create run
         const modelsSnapshot = activeModels.map((m) => ({
@@ -113,17 +114,14 @@ export async function POST(request: NextRequest) {
           .values({ promptText, promptId: promptId || null, status: "running", modelsUsed: modelsSnapshot })
           .returning();
 
-        await db.insert(runBrands).values(
-          brandRecords.map((brand, i) => ({ runId: run.id, brandId: brand.id, position: i + 1 }))
-        );
+        await db.insert(runBrands).values([{ runId: run.id, brandId: brandRecord.id, position: 1 }]);
 
         send("run_created", { runId: run.id });
 
-        // 4. Query each model individually, streaming progress
+        // 4. Query each model, streaming progress
         const allResults: Array<{ model: typeof activeModels[number]; text: string; mode: QueryMode }> = [];
         let completed = 0;
 
-        // Fire all in parallel but report as each finishes
         const jobPromises = jobs.map(async (job) => {
           const displayName = job.model.displayName;
           const mode = job.mode;
@@ -154,7 +152,7 @@ export async function POST(request: NextRequest) {
         await Promise.all(jobPromises);
 
         // 5. Store responses
-        send("phase", { phase: "extracting" });
+        send("phase", { phase: "classifying" });
         const responseRecords: Array<{ id: string; rawText: string; mode: string; modelId: string }> = [];
         for (const result of allResults) {
           if (!result.text) continue;
@@ -165,52 +163,63 @@ export async function POST(request: NextRequest) {
           responseRecords.push({ ...responseRecord, modelId: result.model.id });
         }
 
-        // 6. Extract
-        const brandNamesList = brandRecords.map((b) => b.name);
-        const allExtractions = await Promise.all(
-          responseRecords.map((r) => extractComparison(r.rawText, brandNamesList, selectedConcepts))
+        // 6. Run visibility classifier on each response
+        const classifierModel = activeModels[0]; // use first available model as classifier
+        const classifierConfig = { openrouterId: classifierModel.openrouterId, displayName: classifierModel.displayName };
+
+        const visibilityResults = await Promise.all(
+          responseRecords.map(async (rec) => {
+            try {
+              const classifierPrompt = buildClassifierPrompt(
+                promptText,
+                rec.rawText,
+                brandName,
+                brandRecord.domain || `${brandName.toLowerCase().replace(/\s+/g, "")}.com`
+              );
+              const classifierResponse = await queryModel(classifierPrompt, classifierConfig, "training");
+              return parseClassifierResponse(classifierResponse);
+            } catch {
+              return null;
+            }
+          })
         );
 
-        // 7. Store parsed comparisons and sources
-        send("phase", { phase: "storing" });
+        // Store visibility as parsedComparison entries using conceptEvidence fields
+        for (let i = 0; i < responseRecords.length; i++) {
+          const vis = visibilityResults[i];
+          await db.insert(parsedComparisons).values({
+            responseId: responseRecords[i].id,
+            brandId: brandRecord.id,
+            pros: [],
+            cons: [],
+            strengths: [],
+            weaknesses: [],
+            conceptEvidence: vis
+              ? { _visible: String(vis.visible), _evidence: vis.evidence }
+              : { _visible: "false", _evidence: "" },
+          });
+        }
+
+        // 7. Extract sources from web-mode responses
+        send("phase", { phase: "extracting" });
         const allSourceUrls: string[] = [];
-
-        for (let i = 0; i < allExtractions.length; i++) {
-          const extraction = allExtractions[i];
-          const responseId = responseRecords[i].id;
-          const responseMode = responseRecords[i].mode;
-
-          for (const brandData of extraction.brands) {
-            const brandRecord = brandRecords.find(
-              (b) => b.name.toLowerCase() === brandData.brandName.toLowerCase()
-            );
-            if (!brandRecord) continue;
-            await db.insert(parsedComparisons).values({
-              responseId,
-              brandId: brandRecord.id,
-              pros: brandData.pros,
-              cons: brandData.cons,
-              strengths: brandData.strengths,
-              weaknesses: brandData.weaknesses,
-              conceptEvidence: brandData.conceptEvidence || {},
-            });
-          }
-
-          if (responseMode === "web") {
+        for (const rec of responseRecords) {
+          if (rec.mode !== "web") continue;
+          try {
+            const extraction = await extractComparison(rec.rawText, [brandName], undefined);
             for (const source of extraction.sources) {
               if (!source.url || !source.url.startsWith("http")) continue;
-              const brandRecord = source.brandName
-                ? brandRecords.find((b) => b.name.toLowerCase() === source.brandName!.toLowerCase())
-                : null;
               await db.insert(sources).values({
-                responseId,
-                brandId: brandRecord?.id || null,
+                responseId: rec.id,
+                brandId: brandRecord.id,
                 url: source.url,
                 title: source.title || null,
                 isVerified: null,
               });
               allSourceUrls.push(source.url);
             }
+          } catch {
+            // extraction is best-effort
           }
         }
 
@@ -219,35 +228,18 @@ export async function POST(request: NextRequest) {
           send("phase", { phase: "verifying" });
           const verifications = await verifyUrls(allSourceUrls);
           const verificationMap = new Map(verifications.map((v) => [v.url, v.isVerified]));
-          for (const rec of responseRecords) {
-            if (rec.mode !== "web") continue;
-            const responseSources = await db.query.sources.findMany({ where: eq(sources.responseId, rec.id) });
-            for (const source of responseSources) {
-              await db.update(sources).set({ isVerified: verificationMap.get(source.url) ?? false, verifiedAt: now() }).where(eq(sources.id, source.id));
-            }
+          const responseIds = responseRecords.map((r) => r.id);
+          const responseSources = responseIds.length > 0
+            ? await db.query.sources.findMany({ where: inArray(sources.responseId, responseIds) })
+            : [];
+          for (const source of responseSources) {
+            await db.update(sources)
+              .set({ isVerified: verificationMap.get(source.url) ?? false, verifiedAt: now() })
+              .where(eq(sources.id, source.id));
           }
         }
 
-        // 9. Score
-        send("phase", { phase: "scoring" });
-        for (const mode of ["training", "web"] as const) {
-          const modeExtractions = allExtractions.filter((_, i) => responseRecords[i].mode === mode);
-          const modeConceptScores = modeExtractions.map((e) => e.conceptScores);
-          const aggregated = aggregateScores(modeConceptScores);
-          for (const score of aggregated) {
-            const brandRecord = brandRecords.find((b) => b.name.toLowerCase() === score.brandName.toLowerCase());
-            if (!brandRecord) continue;
-            await db.insert(conceptScores).values({
-              runId: run.id,
-              brandId: brandRecord.id,
-              conceptName: score.conceptName,
-              score: score.score,
-              mode,
-            });
-          }
-        }
-
-        // 10. Complete
+        // 9. Complete
         await db.update(runs).set({ status: "completed", completedAt: now() }).where(eq(runs.id, run.id));
 
         send("complete", { runId: run.id });
