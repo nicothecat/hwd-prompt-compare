@@ -14,65 +14,21 @@ Compare how AI describes your brand vs competitors. Run natural language prompts
 
 - **OpenRouter** — This lets you query multiple AI models through one API. [Sign up and get a key here](https://openrouter.ai/keys).
 - **Anthropic** — This powers the comparison extraction (Claude Haiku 4.5). [Get an API key here](https://console.anthropic.com/settings/keys).
-- **Database** — Choose one:
+- **Database** — None. Storage is local SQLite (`./data/local.db`), created automatically on first run. Zero setup, no account, no configuration.
 
-### SQLite (default)
-- Zero setup — just works, data stored in a local file
-- Perfect for trying it out, local development, and personal use
-- No account signup or configuration needed
-
-### Supabase (PostgreSQL)
-- Cloud-hosted — data persists across deploys and devices
-- Shareable — deploy to Vercel and teammates can use it too
-- Free tier available at [supabase.com](https://supabase.com) — get the connection string from Project Settings > Database
-
-## Quick Start (SQLite — no database setup needed)
+## Quick Start
 
 ```bash
 npm install
 cp .env.example .env.local
-# Edit .env.local — add your OpenRouter and Anthropic keys (leave DATABASE_URL empty)
-npm run db:push:sqlite
+# Edit .env.local — add your OpenRouter and Anthropic keys
+npm run db:push
 npm run dev
 ```
 
 Open [http://localhost:3000](http://localhost:3000). That's it.
 
-## Setup with Supabase (PostgreSQL)
-
-If you want a cloud database (for deployment, sharing data, etc.):
-
-### 1. Get the code and install
-
-```bash
-npm install
-```
-
-### 2. Configure your keys
-
-```bash
-cp .env.example .env.local
-```
-
-Open `.env.local` and fill in all keys including `DATABASE_URL` with your Supabase connection string.
-
-### 3. Set up the database
-
-```bash
-npm run db:push
-```
-
-### 4. Start the app
-
-```bash
-npm run dev
-```
-
-Open [http://localhost:3000](http://localhost:3000) in your browser.
-
-### 5. First run
-
-The app will automatically set up default models (ChatGPT, Claude, Gemini, Perplexity) and sample prompt templates on first use.
+On first use the app automatically sets up default models (ChatGPT, Claude, Gemini, Perplexity) and sample prompt templates.
 
 ## How To Use It
 
@@ -93,8 +49,7 @@ When deploying to a public URL, set the `API_SECRET` environment variable to pro
 ```bash
 npm run dev            # Start the app
 npm run build          # Build for production
-npm run db:push        # Set up Postgres tables (Supabase)
-npm run db:push:sqlite # Set up SQLite tables (local)
+npm run db:push        # Set up SQLite tables (local)
 npm run db:studio      # Browse your data
 ```
 

@@ -1,9 +1,9 @@
-import { db, models, prompts, isPostgres } from "./db";
+import { db, models, prompts } from "./db";
 import { eq } from "drizzle-orm";
 
 function launchDate(dateStr: string) {
-  // Postgres expects Date objects, SQLite expects ISO strings
-  return isPostgres ? new Date(dateStr) : dateStr;
+  // SQLite stores dates as ISO strings.
+  return dateStr;
 }
 
 const DEFAULT_MODELS = [

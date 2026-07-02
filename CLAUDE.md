@@ -5,7 +5,7 @@ A tool to compare brand perception across multiple LLMs by running competitive p
 ## Tech Stack
 
 - **Frontend**: Next.js 15 + TypeScript + Tailwind CSS
-- **Database**: Supabase PostgreSQL + Drizzle ORM
+- **Database**: SQLite (better-sqlite3, WAL) + Drizzle ORM — local `./data/local.db`, zero-config
 - **LLM API**: OpenRouter (multi-model queries)
 - **Extraction**: Anthropic Haiku 4.5 (structured parsing)
 - **Visualization**: Recharts (radar chart, line charts)
