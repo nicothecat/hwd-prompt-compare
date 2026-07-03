@@ -199,7 +199,8 @@ export const visibilityRuns = sqliteTable("visibility_run", {
   brandId: text("brand_id").references(() => brands.id).notNull(),
   promptCount: integer("prompt_count").notNull(),
   modelIds: text("model_ids", { mode: "json" }).$type<string[]>().notNull(),
-  status: text("status", { enum: ["pending", "running", "completed", "failed"] })
+  // "partial" = some jobs failed but usable data exists; "failed" = nothing usable
+  status: text("status", { enum: ["pending", "running", "completed", "partial", "failed"] })
     .notNull()
     .default("pending"),
   createdAt: text("created_at").notNull().$defaultFn(now),

@@ -45,10 +45,12 @@ export async function GET(request: NextRequest) {
       },
     });
 
+    // "partial" runs still hold real, usable concept scores for whatever
+    // extractions succeeded — only exclude runs with nothing usable at all.
     const completedRunIds = [
       ...new Set(
         relevantRunBrands
-          .filter((rb: any) => rb.run.status === "completed")
+          .filter((rb: any) => rb.run.status === "completed" || rb.run.status === "partial")
           .map((rb: any) => rb.run.id)
       ),
     ];
