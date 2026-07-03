@@ -42,6 +42,11 @@ export async function GET() {
 
 // POST /api/runs - Trigger a new comparison run
 export async function POST(request: NextRequest) {
+  // Hoisted so the catch block can still update / report on the run if the
+  // pipeline fails partway through (previously a mid-pipeline error left the
+  // run stuck at status "running" forever with no diagnosable error body).
+  let run: typeof runs.$inferSelect | undefined;
+
   try {
     const body = await request.json();
     const {
@@ -123,7 +128,7 @@ export async function POST(request: NextRequest) {
     }));
 
     // 4. Create the run
-    const [run] = await db
+    [run] = await db
       .insert(runs)
       .values({
         promptText,
@@ -133,10 +138,18 @@ export async function POST(request: NextRequest) {
       })
       .returning();
 
+    if (!run) {
+      throw new Error("Failed to create run record");
+    }
+    // Narrow to a non-undefined local for the rest of the pipeline — `run`
+    // stays a `let` (mutable, closed over by callbacks below) so TS can't
+    // otherwise carry the narrowing across those closures.
+    const createdRun = run;
+
     // 5. Link brands to run
     await db.insert(runBrands).values(
       brandRecords.map((brand, i) => ({
-        runId: run.id,
+        runId: createdRun.id,
         brandId: brand.id,
         position: i + 1,
       }))
@@ -158,6 +171,7 @@ export async function POST(request: NextRequest) {
 
     const results = await Promise.all(promises);
     const allModelResults = results.flat();
+    const modelFailures = allModelResults.filter((r) => r.error).length;
 
     // 7. Store responses with mode
     const responseRecords: Array<{ id: string; rawText: string; mode: string; modelId: string }> = [];
@@ -172,7 +186,7 @@ export async function POST(request: NextRequest) {
       const [responseRecord] = await db
         .insert(responses)
         .values({
-          runId: run.id,
+          runId: createdRun.id,
           modelId: model.id,
           rawText: result.text,
           mode: result.mode,
@@ -182,10 +196,26 @@ export async function POST(request: NextRequest) {
       responseRecords.push({ ...responseRecord, modelId: model.id });
     }
 
-    // 8. Extract structured data from each response (parallel)
+    // 8. Extract structured data from each response (parallel).
+    // Each extraction call hits an external API and can fail independently
+    // (rate limit, timeout, malformed output). Previously this used a bare
+    // Promise.all, so a single failed extraction rejected the whole batch and
+    // crashed the entire multi-brand run with a bare 500 — even though every
+    // other response had already been fetched successfully. Isolate failures
+    // per-response instead so one bad call degrades gracefully rather than
+    // taking down the run.
     const brandNamesList = brandRecords.map((b) => b.name);
+    let extractionFailures = 0;
     const allExtractions = await Promise.all(
-      responseRecords.map((r) => extractComparison(r.rawText, brandNamesList, selectedConcepts))
+      responseRecords.map(async (r) => {
+        try {
+          return await extractComparison(r.rawText, brandNamesList, selectedConcepts);
+        } catch (err) {
+          extractionFailures++;
+          console.error(`Extraction failed for response ${r.id}:`, err);
+          return { brands: [], sources: [], conceptScores: [] };
+        }
+      })
     );
 
     // 9. Store parsed comparisons and sources
@@ -276,7 +306,7 @@ export async function POST(request: NextRequest) {
         if (!brandRecord) continue;
 
         await db.insert(conceptScores).values({
-          runId: run.id,
+          runId: createdRun.id,
           brandId: brandRecord.id,
           conceptName: score.conceptName,
           score: score.score,
@@ -285,22 +315,59 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    // 12. Mark run as completed
+    // 12. Determine final status — granular, not just completed/failed:
+    //   - "failed": nothing usable came out of the run (no responses stored)
+    //   - "partial": some model calls or extractions failed, but usable
+    //     per-prompt data exists for the rest (previously this case was
+    //     mislabeled "failed" even when results were fully readable)
+    //   - "completed": everything succeeded
+    const hasAnyData = responseRecords.length > 0;
+    const hasErrors = modelFailures > 0 || extractionFailures > 0;
+    const finalStatus: "completed" | "partial" | "failed" = !hasAnyData
+      ? "failed"
+      : hasErrors
+        ? "partial"
+        : "completed";
+
     await db
       .update(runs)
-      .set({ status: "completed", completedAt: now() })
-      .where(eq(runs.id, run.id));
+      .set({ status: finalStatus, completedAt: now() })
+      .where(eq(runs.id, createdRun.id));
 
     return NextResponse.json({
-      runId: run.id,
-      status: "completed",
+      runId: createdRun.id,
+      status: finalStatus,
       responsesCount: responseRecords.length,
       brandsCompared: brandNamesList,
+      ...(hasErrors ? { errors: { modelFailures, extractionFailures } } : {}),
     });
   } catch (error) {
     console.error("Error running comparison:", error);
+    const message = error instanceof Error ? error.message : "Unknown error";
+    // Stack-safe detail: name + message only, never the raw stack trace to
+    // the client. Full stack still goes to the server console above.
+    const detail = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
+
+    // A run row may already exist (created in step 4) even though the
+    // pipeline crashed later — don't leave it stuck at "running" forever.
+    if (run?.id) {
+      try {
+        await db
+          .update(runs)
+          .set({ status: "failed", completedAt: now() })
+          .where(eq(runs.id, run.id));
+      } catch (updateErr) {
+        console.error("Failed to mark run as failed after error:", updateErr);
+      }
+    }
+
     return NextResponse.json(
-      { error: "Failed to run comparison" },
+      {
+        error: "Failed to run comparison",
+        message,
+        detail,
+        runId: run?.id ?? null,
+      },
       { status: 500 }
     );
   }
