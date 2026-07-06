@@ -42,7 +42,10 @@ async function verifyUrl(url: string): Promise<VerificationResult> {
       isVerified: response.ok,
       statusCode: response.status,
     };
-  } catch {
+  } catch (err) {
+    // Previously swallowed silently — a systematic verification failure
+    // (bad network, DNS, etc.) looked identical to "this one link is dead."
+    console.warn(`[source-verification] HEAD check failed for ${url}:`, err);
     return { url, isVerified: false };
   }
 }
