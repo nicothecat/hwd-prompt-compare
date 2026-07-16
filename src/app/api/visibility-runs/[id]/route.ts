@@ -58,7 +58,7 @@ export async function GET(
     const totalCount = modelResponses.length;
     const errored = modelResponses.filter((r) => r.error !== null);
     const evaluated = modelResponses.filter((r) => r.visible !== null);
-    const visibleCount = evaluated.filter((r) => r.visible === true || r.visible === 1).length;
+    const visibleCount = evaluated.filter((r) => r.visible === true || r.visible === (1 as unknown as boolean)).length;
     const evaluatedCount = evaluated.length;
     const rate = evaluatedCount === 0 ? 0 : visibleCount / evaluatedCount;
 
@@ -79,7 +79,7 @@ export async function GET(
   const visibilityByPrompt = promptIndices.map((promptIndex) => {
     const promptResponses = runResponses.filter((r) => r.promptIndex === promptIndex);
     const evaluated = promptResponses.filter((r) => r.visible !== null);
-    const visibleCount = evaluated.filter((r) => r.visible === true || r.visible === 1).length;
+    const visibleCount = evaluated.filter((r) => r.visible === true || r.visible === (1 as unknown as boolean)).length;
     const totalModels = modelIds.length;
     return {
       promptIndex,
