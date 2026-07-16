@@ -13,7 +13,27 @@ Does the model's answer mention or describe "${brandName}" (or its domain ${bran
 
 export function parseClassifierResponse(
   raw: string,
+  brandName?: string,
+  brandDomain?: string,
+  originalResponse?: string,
 ): { visible: boolean; evidence: string } | null {
+  // First: simple text match as a safety net
+  if (brandName && originalResponse) {
+    const lowerResponse = originalResponse.toLowerCase();
+    const lowerBrand = brandName.toLowerCase();
+    const lowerDomain = brandDomain?.toLowerCase() || "";
+
+    if (lowerResponse.includes(lowerBrand) || (lowerDomain && lowerResponse.includes(lowerDomain))) {
+      // Brand IS in the text — find the sentence containing it
+      const sentences = originalResponse.split(/(?<=[.!?])\s+/);
+      const matchSentence = sentences.find(
+        (s) => s.toLowerCase().includes(lowerBrand) || (lowerDomain && s.toLowerCase().includes(lowerDomain))
+      );
+      return { visible: true, evidence: matchSentence || brandName };
+    }
+  }
+
+  // Fall back to LLM classifier response
   try {
     const match = raw.match(/\{[\s\S]*?"visible"[\s\S]*?\}/);
     if (!match) return null;

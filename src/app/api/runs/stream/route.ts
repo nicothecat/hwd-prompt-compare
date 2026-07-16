@@ -177,7 +177,7 @@ export async function POST(request: NextRequest) {
                 brandRecord.domain || `${brandName.toLowerCase().replace(/\s+/g, "")}.com`
               );
               const classifierResponse = await queryModel(classifierPrompt, classifierConfig, "training");
-              return parseClassifierResponse(classifierResponse);
+              return parseClassifierResponse(classifierResponse, brandName, brandRecord.domain || "", rec.rawText);
             } catch {
               return null;
             }
